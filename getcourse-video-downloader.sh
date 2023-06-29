@@ -7,8 +7,7 @@ set -eu
 set +f
 set -o pipefail
 
-if [ ! -f "$0" ]
-then
+if [ ! -f "$0" ]; then
 	a0="$0"
 else
 	a0="bash $0"
@@ -27,35 +26,27 @@ $a0 \"эта_ссылка\" \"Как скачать видео с GetCourse.ts\"
 "
 }
 
-tmpdir="$(umask 077 && mktemp -d)"
-export TMPDIR="$tmpdir"
+tmpdir="/tmp/tmp_cours"
+mkdir -p "$tmpdir"
 trap 'rm -fr "$tmpdir"' EXIT
 
 if [ -z "${1:-}" ] || \
    [ -z "${2:-}" ] || \
-   [ -n "${3:-}" ]
-then
+   [ -n "${3:-}" ]; then
 	_echo_help
 	exit 1
 fi
+
 URL="$1"
 result_file="$2"
-touch "$result_file"
 
-main_playlist="$(mktemp)"
+main_playlist="$tmpdir/main_playlist"
 curl -L --output "$main_playlist" "$URL"
-second_playlist="$(mktemp)"
-# Бывает (я встречал) 2 варианта видео
-# Может быть, можно проверять [[ "$URL" =~ .*".m3u8".* ]]
-if grep -qE '^https?:\/\/.*\.ts' "$main_playlist"
-then
-	# В плей-листе перечислены напрямую ссылки на фрагменты видео
-	# (если запустили проигрывание, зашли в инструменты разработчика Chromium -> Network,
-	# нашли файл m3u8 и скопировали ссылку на него)
+
+second_playlist="$tmpdir/second_playlist"
+if grep -qE '^https?:\/\/.*\.ts' "$main_playlist"; then
 	cp "$main_playlist" "$second_playlist"
 else
-	# В плей-листе перечислены ссылки на плей-листы частей видео а разных разрешениях,
-	# последним идет самое большое разрешение, его и скачиваем
 	tail="$(tail -n1 "$main_playlist")"
 	if ! [[ "$tail" =~ ^https?:// ]]; then
 		echo "В содержимом заданной ссылки нет прямых ссылок на файлы *.ts (первый вариант),"
@@ -69,13 +60,24 @@ else
 fi
 
 c=0
-while read -r line
-do
+while read -r line; do
 	if ! [[ "$line" =~ ^http ]]; then continue; fi
-	curl -L --output "${tmpdir}/$(printf '%05d' "$c").ts" "$line"
+	filename="$(printf '%05d' "$c").ts"
+	if [ -f "$tmpdir/$filename" ]; then
+		echo "Файл $filename уже существует. Пропускаю скачивание."
+	else
+		while true; do
+			if curl -L --output "$tmpdir/$filename" "$line"; then
+				break
+			else
+				echo "Ошибка при скачивании файла $filename. Повторная попытка..."
+			fi
+		done
+	fi
 	c=$((++c))
 done < "$second_playlist"
 
 cat "$tmpdir"/*.ts > "$result_file"
-echo "Скачивание завершено. Результат здесь:
-$result_file"
+echo "Скачивание завершено. Результат здесь: $result_file"
+
+rm -fr "$tmpdir"
